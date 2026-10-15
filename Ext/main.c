@@ -1,68 +1,96 @@
-#define _POSIX_C_SOURCE 200809L
+#include "oalIPC.h"
+#include "log_output.h"
 
-#include "socket_posix.h"
-
-#include <errno.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
+#include <string.h>
 
 int main(int argc, char **argv)
 {
-    socket_posix_server server = SOCKET_POSIX_SERVER_INITIALIZER;
-    const char *path = argc > 1 ? argv[1] : "/tmp/lxc_demo_ext.sock";
-    struct sigaction action = {0};
-    char buffer[4096];
-    int client_fd;
+    oalIPC *ipc = NULL;
+    oalIPC_config config = {
+        OAL_IPC_SOCKET, OAL_IPC_SERVER, "/tmp/lxc_demo_ext.sock"
+    };
+    static const char request[] = "COUCOU";
+    static const char expected[] = "SALUT";
+    char buffer[OAL_IPC_MAX_SIZE];
     int result = EXIT_SUCCESS;
 
+    if (log_output_init("ext.log") == -1) {
+        perror("ext.log");
+        return EXIT_FAILURE;
+    }
+
+    /* ********************************************************************
+     * INPUT
+     * *******************************************************************/
     if (argc > 2) {
         fprintf(stderr, "Usage: %s [socket_path]\n", argv[0]);
         return EXIT_FAILURE;
     }
-    action.sa_handler = SIG_IGN;
-    sigemptyset(&action.sa_mask);
-    if (sigaction(SIGPIPE, &action, NULL) == -1) {
-        perror("sigaction");
-        return EXIT_FAILURE;
-    }
-    if (socket_posix_init(&server, path) == -1) {
-        perror("socket_posix_init");
-        return EXIT_FAILURE;
-    }
-    printf("Ext listening on %s\n", path);
+    if (argc == 2)
+        config.endpoint = argv[1];
+
+    printf("Ext starting on %s\n", config.endpoint);
     fflush(stdout);
 
-    do {
-        client_fd = socket_posix_accept(&server);
-    } while (client_fd == -1 && errno == EINTR);
-    if (client_fd == -1) {
-        perror("socket_posix_accept");
-        socket_posix_close(&server);
+    /* ********************************************************************
+     * INIT
+     * *******************************************************************/
+    if (oalIPC_init(&ipc, &config) == -1) {
+        perror("oalIPC_init");
         return EXIT_FAILURE;
     }
 
-    /* Initial exchange: echo bytes until this client disconnects. A stream
-     * does not preserve message boundaries; a protocol can be added later. */
+
+    /* ********************************************************************
+     * ECHANGE
+     * *******************************************************************/
+    /* Fixed-size wire protocol: 6 request bytes and 5 response bytes,
+     * without a terminating NUL or newline. Socket reads may be partial. */
     for (;;) {
-        ssize_t count = socket_posix_receive(client_fd, buffer, sizeof(buffer));
-        if (count == 0)
-            break;
-        if (count < 0) {
-            if (errno == EINTR)
-                continue;
-            perror("socket_posix_receive");
+        size_t received = 0;
+        int disconnected = 0;
+
+        if (oalIPC_send(ipc, request, sizeof(request) - 1) == -1) {
+            perror("oalIPC_send");
             result = EXIT_FAILURE;
             break;
         }
-        if (socket_posix_send(client_fd, buffer, (size_t)count) == -1) {
-            perror("socket_posix_send");
-            result = EXIT_FAILURE;
-            break;
+        puts("[Ext] TX: COUCOU");
+        fflush(stdout);
+        while (received < sizeof(expected) - 1) {
+            ssize_t count = oalIPC_receive(ipc, buffer, sizeof(buffer));
+            if (count == -1) {
+                perror("oalIPC_receive");
+                result = EXIT_FAILURE;
+                break;
+            }
+            if (count == 0) {
+                disconnected = 1;
+                if (received != 0) {
+                    fprintf(stderr, "Incomplete response: expected SALUT\n");
+                    result = EXIT_FAILURE;
+                }
+                break;
+            }
+            if ((size_t)count > sizeof(expected) - 1 - received ||
+                memcmp(buffer, expected + received, (size_t)count) != 0) {
+                fprintf(stderr, "Invalid response: expected SALUT\n");
+                result = EXIT_FAILURE;
+                break;
+            }
+            received += (size_t)count;
         }
+        if (result != EXIT_SUCCESS || disconnected)
+            break;
+        puts("[Ext] RX: SALUT");
+        fflush(stdout);
     }
-    close(client_fd);
-    socket_posix_close(&server);
+    if (result == EXIT_SUCCESS && oalIPC_shutdown(ipc) == -1) {
+        perror("oalIPC_shutdown");
+        result = EXIT_FAILURE;
+    }
+    oalIPC_close(&ipc);
     return result;
 }

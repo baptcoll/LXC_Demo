@@ -17,8 +17,8 @@ int socket_posix_init(socket_posix_server *server, const char *path);
 int socket_posix_accept(const socket_posix_server *server);
 /* Returns bytes received, 0 on disconnect, or -1 with errno set. */
 ssize_t socket_posix_receive(int client_fd, void *buffer, size_t capacity);
-/* Sends the entire buffer, or returns -1 with errno set. Ignore SIGPIPE
- * in the calling application so a disconnected peer yields EPIPE. */
+/* Internal helper: sends the entire buffer or returns -1 with errno set.
+ * oalIPC configures SO_NOSIGPIPE on hosts without MSG_NOSIGNAL. */
 int socket_posix_send(int client_fd, const void *buffer, size_t length);
 void socket_posix_close(socket_posix_server *server);
 

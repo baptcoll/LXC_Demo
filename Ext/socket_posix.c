@@ -62,7 +62,11 @@ int socket_posix_send(int client_fd, const void *buffer, size_t length)
     size_t sent = 0;
 
     while (sent < length) {
-        ssize_t count = send(client_fd, bytes + sent, length - sent, 0);
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags = MSG_NOSIGNAL;
+#endif
+        ssize_t count = send(client_fd, bytes + sent, length - sent, flags);
         if (count < 0) {
             if (errno == EINTR)
                 continue;
